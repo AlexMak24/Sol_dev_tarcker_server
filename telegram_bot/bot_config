@@ -1,0 +1,114 @@
+# bot_config.py - Настройки Telegram бота
+
+# ===================================================================
+# TELEGRAM BOT TOKEN
+# ===================================================================
+# Получить токен можно у @BotFather:
+# 1. Открой @BotFather в Telegram
+# 2. Напиши /newbot
+# 3. Следуй инструкциям
+# 4. Получишь токен вида: 1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
+# 5. Вставь его ниже:
+
+BOT_TOKEN = "8322872575:AAGkCwnkwsMgqYs0U7GCmI31PUmSaH3KWng"
+
+# ===================================================================
+# СУПЕР АДМИН (твой Telegram ID)
+# ===================================================================
+# Узнать свой ID можно у @userinfobot:
+# 1. Открой @userinfobot в Telegram
+# 2. Напиши /start
+# 3. Бот покажет твой ID (например: 123456789)
+# 4. Вставь его ниже:
+
+SUPER_ADMIN_ID = 793784229  # ← ЗАМЕНИ НА СВОЙ ID
+
+# ===================================================================
+# ДОПОЛНИТЕЛЬНЫЕ АДМИНЫ
+# ===================================================================
+# Список других администраторов (можешь добавлять вручную или через команды)
+# Формат: [telegram_id1, telegram_id2, ...]
+
+ADDITIONAL_ADMINS = [
+    # 987654321,  # Пример: ID другого админа
+    # 555666777,  # Ещё один админ
+]
+
+
+# ===================================================================
+# ФУНКЦИИ ПРОВЕРКИ
+# ===================================================================
+
+def is_super_admin(telegram_id: int) -> bool:
+    """
+    Проверка супер админа (только ты)
+    Только супер админ может добавлять/удалять других админов
+    """
+    return telegram_id == SUPER_ADMIN_ID
+
+
+def is_admin(telegram_id: int) -> bool:
+    """
+    Проверка любого админа (супер админ + дополнительные)
+    Все админы могут управлять пользователями и смотреть статистику
+    """
+    return telegram_id == SUPER_ADMIN_ID or telegram_id in ADDITIONAL_ADMINS
+
+
+def add_admin(telegram_id: int) -> bool:
+    """
+    Добавить нового админа
+    Возвращает True если добавлен, False если уже был
+    """
+    if telegram_id not in ADDITIONAL_ADMINS:
+        ADDITIONAL_ADMINS.append(telegram_id)
+        print(f"✅ Админ добавлен: {telegram_id}")
+        return True
+    print(f"⚠️ Пользователь {telegram_id} уже админ")
+    return False
+
+
+def remove_admin(telegram_id: int) -> bool:
+    """
+    Убрать админа
+    Нельзя убрать супер админа!
+    Возвращает True если убран, False если не был админом
+    """
+    if telegram_id == SUPER_ADMIN_ID:
+        print(f"❌ Нельзя убрать супер админа!")
+        return False
+
+    if telegram_id in ADDITIONAL_ADMINS:
+        ADDITIONAL_ADMINS.remove(telegram_id)
+        print(f"✅ Админ убран: {telegram_id}")
+        return True
+
+    print(f"⚠️ Пользователь {telegram_id} не был админом")
+    return False
+
+
+def get_all_admins() -> list:
+    """
+    Получить список всех админов
+    Возвращает список словарей: [{"telegram_id": int, "is_super": bool}, ...]
+    """
+    admins = [{"telegram_id": SUPER_ADMIN_ID, "is_super": True}]
+
+    for admin_id in ADDITIONAL_ADMINS:
+        admins.append({"telegram_id": admin_id, "is_super": False})
+
+    return admins
+
+
+# ===================================================================
+# НАСТРОЙКИ БОТА
+# ===================================================================
+
+# Включить ли подробные логи
+DEBUG = True
+
+# Таймаут для команд (секунды)
+COMMAND_TIMEOUT = 30
+
+# Максимум команд в минуту (защита от спама)
+MAX_COMMANDS_PER_MINUTE = 10
