@@ -1,4 +1,4 @@
-# server.py - ГЛАВНЫЙ СЕРВЕР ДЛЯ AXIOM TRACKER
+# server.py - ГЛАВНЫЙ СЕРВЕР ДЛЯ AXIOM TRACKER (WITH LOGGING - ONLY SENT TOKENS)
 import asyncio
 import websockets
 import json
@@ -111,6 +111,13 @@ class TokenServer:
 
             self.log(f"✅ Authenticated: {username} (ID: {user_id})")
 
+            # ЛОГИРУЕМ ПОДКЛЮЧЕНИЕ В БД
+            self.db.log_connection(
+                user_id=user_id,
+                action="connected",
+                ip_address=str(websocket.remote_address[0]) if websocket.remote_address else None
+            )
+
             return {
                 "user_id": user_id,
                 "username": username,
@@ -140,7 +147,7 @@ class TokenServer:
         try:
             data = json.loads(message)
             command = data.get("command")
-            request_id = data.get("request_id")  # ← Получаем request_id
+            request_id = data.get("request_id")
 
             if command == "get_settings":
                 # Получить текущие настройки
@@ -155,6 +162,14 @@ class TokenServer:
                 # Обновить настройки
                 params = data.get("params", {})
                 self.db.update_user_settings(user_id, **params)
+
+                # ЛОГИРУЕМ ЗАПРОС
+                self.db.log_request(
+                    user_id=user_id,
+                    request_type="update_settings",
+                    request_data=params,
+                    success=True
+                )
 
                 # Обновляем в кэше клиента
                 if websocket in self.clients:
@@ -178,6 +193,15 @@ class TokenServer:
 
                 if dev_wallet:
                     added = self.db.add_to_whitelist(user_id, dev_wallet, token_name, token_ticker)
+
+                    # ЛОГИРУЕМ ЗАПРОС
+                    self.db.log_request(
+                        user_id=user_id,
+                        request_type="add_to_whitelist",
+                        request_data={"dev_wallet": dev_wallet, "name": token_name, "ticker": token_ticker},
+                        success=added
+                    )
+
                     await websocket.send(json.dumps({
                         "request_id": request_id,
                         "type": "whitelist_updated",
@@ -195,6 +219,15 @@ class TokenServer:
 
                 if dev_wallet:
                     removed = self.db.remove_from_whitelist(user_id, dev_wallet)
+
+                    # ЛОГИРУЕМ ЗАПРОС
+                    self.db.log_request(
+                        user_id=user_id,
+                        request_type="remove_from_whitelist",
+                        request_data={"dev_wallet": dev_wallet},
+                        success=removed
+                    )
+
                     await websocket.send(json.dumps({
                         "request_id": request_id,
                         "type": "whitelist_updated",
@@ -212,6 +245,15 @@ class TokenServer:
 
                 if dev_wallet:
                     added = self.db.add_to_blacklist(user_id, dev_wallet, token_name, token_ticker)
+
+                    # ЛОГИРУЕМ ЗАПРОС
+                    self.db.log_request(
+                        user_id=user_id,
+                        request_type="add_to_blacklist",
+                        request_data={"dev_wallet": dev_wallet, "name": token_name, "ticker": token_ticker},
+                        success=added
+                    )
+
                     await websocket.send(json.dumps({
                         "request_id": request_id,
                         "type": "blacklist_updated",
@@ -221,7 +263,7 @@ class TokenServer:
                         "token_ticker": token_ticker,
                         "success": added
                     }))
-                    self.log(f"🚫 {username} added to blacklist: {dev_wallet[:12]}...")
+                    self.log(f"➕ {username} added to blacklist: {dev_wallet[:12]}...")
 
             elif command == "remove_blacklist":
                 # Удалить из blacklist
@@ -229,6 +271,15 @@ class TokenServer:
 
                 if dev_wallet:
                     removed = self.db.remove_from_blacklist(user_id, dev_wallet)
+
+                    # ЛОГИРУЕМ ЗАПРОС
+                    self.db.log_request(
+                        user_id=user_id,
+                        request_type="remove_from_blacklist",
+                        request_data={"dev_wallet": dev_wallet},
+                        success=removed
+                    )
+
                     await websocket.send(json.dumps({
                         "request_id": request_id,
                         "type": "blacklist_updated",
@@ -236,7 +287,7 @@ class TokenServer:
                         "dev_wallet": dev_wallet,
                         "success": removed
                     }))
-                    self.log(f"✅ {username} removed from blacklist: {dev_wallet[:12]}...")
+                    self.log(f"➖ {username} removed from blacklist: {dev_wallet[:12]}...")
 
             elif command == "get_whitelist":
                 # Получить whitelist
@@ -317,6 +368,12 @@ class TokenServer:
         finally:
             # Удаляем из списка активных
             if websocket in self.clients:
+                # ЛОГИРУЕМ ОТКЛЮЧЕНИЕ
+                self.db.log_connection(
+                    user_id=self.clients[websocket]["user_id"],
+                    action="disconnected"
+                )
+
                 del self.clients[websocket]
             self.log(f"👋 Removed: {username} | Total clients: {len(self.clients)}")
 
@@ -338,7 +395,7 @@ class TokenServer:
 
                 self.stats["tokens_received"] += 1
 
-                # ВСЕГДА выводим в консоль сервера (детальный вывод как в new_ws_final_V1)
+                # ВСЕГДА выводим в консоль сервера
                 self._log_token_to_console(token)
 
                 # Рассылаем клиентам (параллельно), если они есть
@@ -385,11 +442,30 @@ class TokenServer:
                 self.log(f"❌ Statistics error: {e}", "ERROR")
                 await asyncio.sleep(300)
 
+    async def save_stats_periodically(self):
+        """Сохранение статистики сервера в БД каждые 5 минут"""
+        await asyncio.sleep(300)  # Ждём 5 минут перед первым сохранением
+
+        while True:
+            try:
+                # Сохраняем текущую статистику в БД
+                self.db.save_server_stats(
+                    active_connections=len(self.clients),
+                    tokens_received=self.stats["tokens_received"],
+                    tokens_sent=self.stats["tokens_sent"],
+                    tokens_filtered=self.stats["tokens_filtered"]
+                )
+
+                self.log("💾 Server stats saved to database")
+
+                await asyncio.sleep(300)  # Каждые 5 минут
+
+            except Exception as e:
+                self.log(f"❌ Save stats error: {e}", "ERROR")
+                await asyncio.sleep(300)
+
     def _log_token_to_console(self, token):
-        """
-        Вывод токена в консоль сервера - ДЕТАЛЬНЫЙ как в new_ws_final_V1
-        НО БЕЗ списка токенов дева
-        """
+        """Вывод токена в консоль сервера"""
         has_twitter = token.get('twitter', '') and token['twitter'].strip() and token['twitter'] != 'null'
         is_post = 'status/' in token.get('twitter', '')
 
@@ -431,16 +507,13 @@ class TokenServer:
                 valid_tokens = dev_mcap_info.get('valid_tokens', 0)
                 api_used = dev_mcap_info.get('api_used', 'unknown')
 
-                # AVG MCAP (по ВСЕМ токенам)
                 print(
                     f"Dev Avg MC:       ${dev_mcap_info.get('avg_mcap', 0):,.2f} ({valid_tokens} tokens){cached_str} via {api_used}")
 
-                # AVG ATH (только по 10 токенам)
                 ath_count = dev_mcap_info.get('ath_calculated_for', 0)
                 ath_str = f" (ATH for {ath_count} tokens)" if ath_count > 0 else ""
                 print(f"Dev Avg ATH MC:   ${dev_mcap_info.get('avg_ath_mcap', 0):,.2f}{ath_str}")
 
-                # МИГРАЦИИ (по ВСЕМ токенам)
                 migrated = token.get('migrated', 0)
                 total = token.get('total', 0)
                 percentage = token.get('percentage', 0)
@@ -498,21 +571,31 @@ class TokenServer:
                     tasks.append(task)
                     sent_to.append(username)
                 else:
+                    # Токен отфильтрован - ТОЛЬКО счётчик
+                    self.stats["tokens_filtered"] += 1
                     filtered_for.append(username)
 
             except Exception as e:
-                self.log(f"❌ Error filtering for {username}: {e}", "ERROR")
+                self.log(f"❌ Error sending to {username}: {e}", "ERROR")
 
-        # Отправляем всем одновременно
+        # Ждём отправки всем клиентам параллельно
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-            self.stats["tokens_sent"] += len(tasks)
+            self.stats["tokens_sent"] += len(sent_to)
 
-        self.stats["tokens_filtered"] += len(filtered_for)
-
-        # Логируем результат ПОСЛЕ основного вывода токена
+        # ✅ ЛОГИРУЕМ ТОКЕН ОДИН РАЗ - если хотя бы кому-то отправили
         if sent_to:
-            print(f"\n📊 Sent to {len(sent_to)} client(s): {', '.join(sent_to)}")
+            self.db.log_token_sent(
+                user_id=None,  # Не привязываем к конкретному пользователю
+                token_address=token.get("token_address"),
+                token_name=token.get("token_name"),
+                token_ticker=token.get("token_ticker"),
+                filtered=False
+            )
+
+        # Логируем результат
+        if sent_to:
+            print(f"✅ Sent to {len(sent_to)} client(s): {', '.join(sent_to)}")
         if filtered_for:
             print(f"🚫 Filtered {len(filtered_for)} client(s): {', '.join(filtered_for)}")
 
@@ -520,10 +603,7 @@ class TokenServer:
         sys.stdout.flush()
 
     def _prepare_filter_data(self, token):
-        """
-        Подготовка данных токена для фильтрации.
-        Приводим к формату, который ожидает UserManager.
-        """
+        """Подготовка данных токена для фильтрации"""
         dev_mcap_info = token.get('dev_mcap_info', {})
 
         return {
@@ -542,12 +622,8 @@ class TokenServer:
     # ============================================================================
 
     def on_token_ready(self, token_data, timing_data=None):
-        """
-        Callback функция для парсера.
-        Вызывается из другого потока → безопасно кладём в очередь.
-        """
+        """Callback функция для парсера"""
         if self.server_loop and self.token_queue:
-            # Кладём токен в очередь (thread-safe)
             asyncio.run_coroutine_threadsafe(
                 self.token_queue.put(token_data),
                 self.server_loop
@@ -559,26 +635,19 @@ class TokenServer:
         def run_tracker():
             self.log("🔄 Starting Axiom Tracker...")
 
-            # Создаём трекер
             self.tracker = axiom_module.AxiomTracker(
                 auth_file=self.auth_file,
                 twitter_api_key=self.twitter_api_key,
                 avg_tokens_count=self.avg_tokens_count
             )
 
-            # Перехватываем вывод токенов
             original_output = self.tracker._output_token_info
 
             def custom_output(data, processing_time, source, twitter_stats=None,
                               migrated=None, non_migrated=None, percentage=None,
                               cache_time=0, dev_mcap_info=None):
 
-                # НЕ вызываем оригинальный вывод - выводим сами на сервере
-                # original_output(...)
-
-                # Формируем данные для сервера
                 try:
-                    # Пересчитываем миграции из dev_mcap_info (там правильные данные)
                     if dev_mcap_info and not dev_mcap_info.get('error') and not dev_mcap_info.get('is_first_token'):
                         migrated = dev_mcap_info.get('migrated', 0)
                         total = dev_mcap_info.get('total', 0)
@@ -610,30 +679,22 @@ class TokenServer:
                         'is_first_token': dev_mcap_info.get('is_first_token', False) if dev_mcap_info else False
                     }
 
-                    # Очищаем от None
                     token_data = {k: v for k, v in token_data.items() if v is not None}
 
-                    # Если dev_mcap_info с ошибкой - заменяем на пустой
                     if 'error' in token_data.get('dev_mcap_info', {}):
                         token_data['dev_mcap_info'] = {'avg_mcap': 0, 'avg_ath_mcap': 0, 'cached': False}
 
-                    # Отправляем на сервер
                     self.on_token_ready(token_data)
 
                 except Exception as e:
                     self.log(f"❌ Error formatting token: {e}", "ERROR")
 
-            # Подменяем вывод
             self.tracker._output_token_info = custom_output
-
-            # Запускаем парсер
             self.tracker.start()
 
-        # Запускаем в отдельном потоке
         self.tracker_thread = Thread(target=run_tracker, daemon=True)
         self.tracker_thread.start()
 
-        # Ждём инициализации
         time.sleep(3)
         self.log("✅ Axiom Tracker started")
 
@@ -644,10 +705,7 @@ class TokenServer:
     async def start(self):
         """Запуск сервера"""
 
-        # Сохраняем event loop
         self.server_loop = asyncio.get_event_loop()
-
-        # Создаём очередь токенов
         self.token_queue = asyncio.Queue()
 
         # Баннер
@@ -659,17 +717,17 @@ class TokenServer:
         print(f"⚡ Avg tokens count: {self.avg_tokens_count}")
         print(f"⚡ Миграции и Avg MCAP: по ВСЕМ токенам")
         print(f"⚡ Avg ATH MCAP: по последним {self.avg_tokens_count} токенам")
+        print(f"💾 Token logs: ONLY SENT TOKENS (filtered out are not logged)")
         print("=" * 80)
         sys.stdout.flush()
 
         # Запускаем парсер
         self.start_tracker()
 
-        # Запускаем фоновую рассылку токенов
+        # Запускаем фоновые задачи
         asyncio.create_task(self.broadcast_tokens())
-
-        # Запускаем фоновый вывод статистики
         asyncio.create_task(self.print_statistics())
+        asyncio.create_task(self.save_stats_periodically())
 
         # Запускаем WebSocket сервер
         self.log(f"✅ WebSocket server starting on {self.host}:{self.port}...")
@@ -679,7 +737,6 @@ class TokenServer:
             print("=" * 80 + "\n")
             sys.stdout.flush()
 
-            # Работаем вечно
             await asyncio.Future()
 
     def stop(self):
@@ -697,10 +754,8 @@ class TokenServer:
 def run_server():
     """Точка входа"""
 
-    # Настраиваем stdout для flush
     sys.stdout.reconfigure(line_buffering=True)
 
-    # Создаём сервер
     server = TokenServer(
         host="0.0.0.0",
         port=8765,
@@ -710,7 +765,6 @@ def run_server():
     )
 
     try:
-        # Запускаем
         asyncio.run(server.start())
     except KeyboardInterrupt:
         print("\n\n👋 Server stopped by user")
